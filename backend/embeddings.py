@@ -1,9 +1,14 @@
-from sentence_transformers import SentenceTransformer
+import requests
+import os
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+URL = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={GEMINI_API_KEY}"
 
 def get_embedding(text: str) -> list[float]:
-    return model.encode(text).tolist()
+    response = requests.post(URL, json={
+        "content": {"parts": [{"text": text}]}
+    })
+    return response.json()["embedding"]["values"]
 
 def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    return model.encode(texts).tolist()
+    return [get_embedding(t) for t in texts]
