@@ -21,10 +21,12 @@ Answer:"""
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
         json={
-            "model": "llama-3.1-8b-instant",
+            "model": "openai/gpt-oss-20b",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2   # low temperature = more factual, less creative
+            "temperature": 0.2
         }
     )
-    return response.json()["choices"][0]["message"]["content"]
-    
+    data = response.json()
+    if "choices" not in data:
+        raise Exception(f"Groq API error: {data}")
+    return data["choices"][0]["message"]["content"]
