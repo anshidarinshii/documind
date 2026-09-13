@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,6 +11,9 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 // raw HTML, so we convert those to real Markdown hard-breaks before parsing
 // -- a plain string substitution, not an HTML pass-through.
 const toMarkdownBreaks = (text) => text.replace(/<br\s*\/?>/gi, '  \n');
+
+const makeId = () =>
+  crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
 const STARTER_PROMPTS = [
   {
@@ -43,19 +46,20 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false);
 
   const [question, setQuestion] = useState('');
-  const [submittedQuestion, setSubmittedQuestion] = useState('');
-  const [answer, setAnswer] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [askError, setAskError] = useState(null);
-  const [openSources, setOpenSources] = useState(() => new Set());
-  const [copied, setCopied] = useState(false);
+  // Each turn: { id, question, answer: {answer, sources}|null, error: string|null, loading, openSources: Set }
+  const [messages, setMessages] = useState([]);
+  const [asking, setAsking] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const feedEndRef = useRef(null);
+
+  useEffect(() => {
+    feedEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages]);
 
   const resetConversation = () => {
-    setAnswer(null);
+    setMessages([]);
     setQuestion('');
-    setSubmittedQuestion('');
-    setAskError(null);
-    setOpenSources(new Set());
   };
 
   const handleUpload = async (fileList) => {
@@ -80,40 +84,51 @@ function App() {
 
   const handleAsk = async () => {
     const trimmed = question.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || asking) return;
 
-    setLoading(true);
-    setAskError(null);
-    setSubmittedQuestion(trimmed);
-    setOpenSources(new Set());
+    const id = makeId();
+    setMessages((prev) => [
+      ...prev,
+      { id, question: trimmed, answer: null, error: null, loading: true, openSources: new Set() },
+    ]);
+    setQuestion('');
+    setAsking(true);
     try {
       const res = await axios.post(`${API_URL}/ask`, null, {
         params: { doc_id: docId, question: trimmed },
       });
-      setAnswer(res.data);
-      setQuestion('');
+      setMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, answer: res.data, loading: false } : m))
+      );
     } catch {
-      setAskError("Something went wrong answering that one. Please try again.");
-      setAnswer(null);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === id
+            ? { ...m, error: "Something went wrong answering that one. Please try again.", loading: false }
+            : m
+        )
+      );
     } finally {
-      setLoading(false);
+      setAsking(false);
     }
   };
 
-  const toggleSource = (index) => {
-    setOpenSources((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
-      return next;
-    });
+  const toggleSource = (messageId, index) => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== messageId) return m;
+        const next = new Set(m.openSources);
+        if (next.has(index)) next.delete(index);
+        else next.add(index);
+        return { ...m, openSources: next };
+      })
+    );
   };
 
-  const handleCopyAnswer = () => {
-    if (!answer?.answer) return;
-    navigator.clipboard.writeText(answer.answer);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopyAnswer = (messageId, text) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(messageId);
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
   const handleDrop = (e) => {
@@ -290,7 +305,7 @@ function App() {
             </div>
 
             <div className="conversation-feed">
-              {!answer && !loading && !askError ? (
+              {messages.length === 0 ? (
                 <div className="feed-empty">
                   <p className="feed-empty-mark" aria-hidden="true">&para;</p>
                   <h2>What would you like to know?</h2>
@@ -306,75 +321,76 @@ function App() {
                 </div>
               ) : (
                 <>
-                  {submittedQuestion && (
-                    <div className="bubble bubble-user">
-                      <p>{submittedQuestion}</p>
-                    </div>
-                  )}
+                  {messages.map((m) => (
+                    <div key={m.id} className="conversation-turn">
+                      <div className="bubble bubble-user">
+                        <p>{m.question}</p>
+                      </div>
 
-                  {(loading || answer || askError) && (
-                    <div className="bubble bubble-assistant">
-                      <span className={`assistant-mark ${loading ? 'is-thinking' : ''}`} aria-hidden="true">&para;</span>
-                      <div className="bubble-assistant-body">
-                        <div className="bubble-assistant-header">
-                          <span className="bubble-assistant-name">DocuMind</span>
-                          {answer && !loading && <span className="grounded-tag">Grounded</span>}
-                          {answer && !loading && (
-                            <button className="copy-btn" onClick={handleCopyAnswer}>
-                              {copied ? 'Copied' : 'Copy'}
-                            </button>
-                          )}
-                        </div>
-
-                        {loading ? (
-                          <div className="thinking-state">
-                            <p>Reading the relevant passages&hellip;</p>
-                            <span className="thinking-dots" aria-hidden="true"><span /><span /><span /></span>
-                          </div>
-                        ) : askError ? (
-                          <p className="inline-error">{askError}</p>
-                        ) : answer ? (
-                          <>
-                            <div className="answer-text">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {toMarkdownBreaks(answer.answer)}
-                              </ReactMarkdown>
-                            </div>
-
-                            {answer.sources && answer.sources.length > 0 && (
-                              <div className="citations">
-                                <div className="citation-chip-row">
-                                  <span className="citation-label">Sources</span>
-                                  {answer.sources.map((_, i) => (
-                                    <button
-                                      key={i}
-                                      className={`citation-chip ${openSources.has(i) ? 'is-open' : ''}`}
-                                      onClick={() => toggleSource(i)}
-                                      aria-expanded={openSources.has(i)}
-                                    >
-                                      {i + 1}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="citation-panels">
-                                  {answer.sources.map((source, i) => (
-                                    <div key={i} className={`citation-panel ${openSources.has(i) ? 'is-open' : ''}`}>
-                                      <div className="citation-panel-inner">
-                                        <blockquote>
-                                          <span className="citation-panel-index">Source {i + 1}</span>
-                                          {source}
-                                        </blockquote>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
+                      <div className="bubble bubble-assistant">
+                        <span className={`assistant-mark ${m.loading ? 'is-thinking' : ''}`} aria-hidden="true">&para;</span>
+                        <div className="bubble-assistant-body">
+                          <div className="bubble-assistant-header">
+                            <span className="bubble-assistant-name">DocuMind</span>
+                            {m.answer && !m.loading && <span className="grounded-tag">Grounded</span>}
+                            {m.answer && !m.loading && (
+                              <button className="copy-btn" onClick={() => handleCopyAnswer(m.id, m.answer.answer)}>
+                                {copiedId === m.id ? 'Copied' : 'Copy'}
+                              </button>
                             )}
-                          </>
-                        ) : null}
+                          </div>
+
+                          {m.loading ? (
+                            <div className="thinking-state">
+                              <p>Reading the relevant passages&hellip;</p>
+                              <span className="thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+                            </div>
+                          ) : m.error ? (
+                            <p className="inline-error">{m.error}</p>
+                          ) : m.answer ? (
+                            <>
+                              <div className="answer-text">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {toMarkdownBreaks(m.answer.answer)}
+                                </ReactMarkdown>
+                              </div>
+
+                              {m.answer.sources && m.answer.sources.length > 0 && (
+                                <div className="citations">
+                                  <div className="citation-chip-row">
+                                    <span className="citation-label">Sources</span>
+                                    {m.answer.sources.map((_, i) => (
+                                      <button
+                                        key={i}
+                                        className={`citation-chip ${m.openSources.has(i) ? 'is-open' : ''}`}
+                                        onClick={() => toggleSource(m.id, i)}
+                                        aria-expanded={m.openSources.has(i)}
+                                      >
+                                        {i + 1}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <div className="citation-panels">
+                                    {m.answer.sources.map((source, i) => (
+                                      <div key={i} className={`citation-panel ${m.openSources.has(i) ? 'is-open' : ''}`}>
+                                        <div className="citation-panel-inner">
+                                          <blockquote>
+                                            <span className="citation-panel-index">Source {i + 1}</span>
+                                            {source}
+                                          </blockquote>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
-                  )}
+                  ))}
+                  <div ref={feedEndRef} />
                 </>
               )}
             </div>
@@ -387,18 +403,18 @@ function App() {
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && !loading && question.trim()) {
+                    if (e.key === 'Enter' && !e.shiftKey && !asking && question.trim()) {
                       e.preventDefault();
                       handleAsk();
                     }
                   }}
                   placeholder="Ask a question about this document..."
-                  disabled={loading}
+                  disabled={asking}
                 />
                 <button
                   className="composer-send"
                   onClick={handleAsk}
-                  disabled={loading || !question.trim()}
+                  disabled={asking || !question.trim()}
                 >
                   Ask
                 </button>

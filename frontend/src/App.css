@@ -570,6 +570,12 @@ label.ghost-btn {
 }
 
 /* Chat bubbles */
+.conversation-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .bubble {
   animation: scene-enter var(--duration-base) var(--ease-out);
 }
